@@ -1,11 +1,10 @@
 package com.example.sharefile.activity;
 
-import android.Manifest;
 import android.content.Intent;
-import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Environment;
 import android.provider.MediaStore;
 import android.view.View;
 import android.view.animation.Animation;
@@ -13,30 +12,27 @@ import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.app.ShareCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import com.bumptech.glide.Glide;
 import com.example.sharefile.R;
-import com.example.sharefile.util.LogToFile;
-import com.example.sharefile.util.PermissionGet;
+import com.example.sharefile.util.FileUtil;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 
 import java.io.File;
 import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 
-public class MainActivity extends AppCompatActivity implements View.OnClickListener, PermissionGet {
-    private static final String FILES_AUTHORITY = "com.example.sharefile.provider";
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
+    public static final int PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG = 0;
     public static final int PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_PHOTO = 3;
-    private LogToFile fileLogger;
     private Animation rotateOpen;
     private Animation rotateClose;
     private Animation fromBottom;
@@ -45,20 +41,18 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private FloatingActionButton shareLogButton;
     private FloatingActionButton makePhotoButton;
     private FloatingActionButton chosePhotoButton;
-    private ImageView imageView;
     private final int GALLERY_REQUEST = 1;
     private final int REQUEST_IMAGE_CAPTURE = 2;
     private boolean clicked;
-    private String currentPhotoPath;
 
     @Override
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        fileLogger = new LogToFile(this);
-        fileLogger.log("onCreate() started");
-
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onCreate() started", this);
+        }
         initAnimations();
         initButtons();
     }
@@ -127,16 +121,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     }
 
-    void shareLogFile() {
-        Uri uriToFile = FileProvider.getUriForFile(this, FILES_AUTHORITY, fileLogger.getLogFile());
-        Intent shareIntent = ShareCompat.IntentBuilder.from(this)
-                .setType(getContentResolver().getType(uriToFile))
-                .setStream(uriToFile)
-                .getIntent();
-        shareIntent.setData(uriToFile);
-        shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(shareIntent);
-    }
 
     @Override
     public void onClick(View v) {
@@ -145,7 +129,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 onOptionsButtonClicked();
                 break;
             case (R.id.floatingActionButton_share):
-                shareLogFile();
+                FileUtil.shareLogFile(this);
                 break;
             case (R.id.floatingActionButton_chosePhoto):
                 Intent photoPickerIntent = new Intent(Intent.ACTION_PICK);
@@ -154,7 +138,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 startActivityForResult(photoPickerIntent, GALLERY_REQUEST);
                 break;
             case (R.id.floatingActionButton_makePhoto):
-                requestPermissions(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_PHOTO);
+                if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_PHOTO)) {
+                    dispatchTakePictureIntent();
+                }
                 break;
         }
     }
@@ -162,21 +148,32 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        // не получаеться у меня с курсором, потому что когда я кладу в интент файл (190 строка)
-        // data приходит null
         if (resultCode == RESULT_OK) {
-            imageView = findViewById(R.id.imageView);
+            ImageView imageView = findViewById(R.id.imageView);
             switch (requestCode) {
                 case GALLERY_REQUEST:
                     if (data != null) {
                         Uri selectedImageUri = data.getData();
-                        Glide.with(this).load(selectedImageUri).into(imageView);
+                        String[] filePathColumn = {MediaStore.Images.Media.DATA};
+                        if (selectedImageUri != null) {
+                            Cursor cursor = getContentResolver().query(selectedImageUri,
+                                    filePathColumn, null, null, null);
+                            if (cursor != null) {
+                                cursor.moveToFirst();
+                                int columnIndex = cursor.getColumnIndex(filePathColumn[0]);
+                                String imagePath = cursor.getString(columnIndex);
+                                imageView.setImageBitmap(BitmapFactory.decodeFile(imagePath));
+                                cursor.close();
+                            }
+                        }
                     }
                     break;
                 case REQUEST_IMAGE_CAPTURE:
-                    File file = new File(currentPhotoPath);
-                    Uri contentUri = Uri.fromFile(file);
-                    Glide.with(this).load(contentUri).into(imageView);
+                    if (FileUtil.getCurrentPhotoPath() != null) {
+                        File file = new File(FileUtil.getCurrentPhotoPath());
+                        Uri contentUri = Uri.fromFile(file);
+                        Glide.with(this).load(contentUri).into(imageView);
+                    }
                     break;
             }
         }
@@ -184,17 +181,16 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     private void dispatchTakePictureIntent() {
         Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-       // на эмуляторе Pixel XL API 30 takePictureIntent.resolveActivity(getPackageManager()) == null програма дальше не идёт
         if (takePictureIntent.resolveActivity(getPackageManager()) != null) {
             File photoFile = null;
             try {
-                photoFile = createImageFile();
+                photoFile = FileUtil.createImageFile(this);
             } catch (IOException ex) {
                 ex.printStackTrace();
             }
             if (photoFile != null) {
                 Uri photoURI = FileProvider.getUriForFile(this,
-                        "com.example.sharefile.provider",
+                        FileUtil.FILES_AUTHORITY,
                         photoFile);
                 takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
                 takePictureIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -203,68 +199,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         }
     }
 
-    private File createImageFile() throws IOException {
-        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        String imageFileName = "JPEG_" + timeStamp + "_";
-        File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-        File image = File.createTempFile(
-                imageFileName,
-                ".jpg",
-                storageDir
-        );
-        currentPhotoPath = image.getAbsolutePath();
-        return image;
-    }
-
-    private void requestPermissions(int requestCode) {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-                PackageManager.PERMISSION_GRANTED) {
-
-            switch (requestCode) {
-                case LogToFile.PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG: {
-                    fileLogger.setPermission(true);
-                    break;
-                }
-                case PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_PHOTO: {
-                    dispatchTakePictureIntent();
-                    break;
-                }
-            }
-
-        } else if (ActivityCompat.shouldShowRequestPermissionRationale(this, WRITE_EXTERNAL_STORAGE)) {
-            new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("Permission Required")
-                    .setMessage("Storage permission is required to save data")
-                    .setPositiveButton("ALLOW", (dialogInterface, i) -> {
-                        ActivityCompat.requestPermissions(MainActivity.this,
-                                new String[]{WRITE_EXTERNAL_STORAGE}, requestCode
-                        );
-                        dialogInterface.dismiss();
-                    }).setNegativeButton("DENIED", (dialog, which) -> {
-                dialog.dismiss();
-            }).show();
-        } else {
-            ActivityCompat.requestPermissions(this,
-                    new String[]{WRITE_EXTERNAL_STORAGE}, requestCode);
-        }
-    }
-
     @Override
     public void onRequestPermissionsResult(int requestCode,
-                                           String[] permissions, int[] grantResults) {
+                                           @NonNull String[] permissions, @NonNull int[] grantResults) {
         switch (requestCode) {
-            case LogToFile.PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG: {
+            case PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG: {
                 if (grantResults.length > 0
-                        && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    fileLogger.setPermission(true);
+                        && grantResults[0] == PERMISSION_GRANTED) {
+                    //??????????????
                 } else {
                     Toast.makeText(this, "permission denied", Toast.LENGTH_SHORT).show();
                 }
             }
             case PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_PHOTO: {
                 if (grantResults.length > 0
-                        && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                        && grantResults[0] == PERMISSION_GRANTED) {
                     dispatchTakePictureIntent();
                 } else {
                     Toast.makeText(this, "permission denied", Toast.LENGTH_SHORT).show();
@@ -273,38 +222,67 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         }
     }
 
+    private boolean checkStoragePermission(int requestCode) {
+        if (ContextCompat.checkSelfPermission(
+                this, WRITE_EXTERNAL_STORAGE) == PERMISSION_GRANTED) {
+            return true;
+        } else if (ActivityCompat.shouldShowRequestPermissionRationale(this, WRITE_EXTERNAL_STORAGE)) {
+            new AlertDialog.Builder(MainActivity.this)
+                    .setTitle(R.string.alertDialog_checkPerm_title)
+                    .setMessage(R.string.alertDialog_checkPerm_desc)
+                    .setPositiveButton(R.string.alertDialog_checkPerm_posButton, (dialogInterface, i) -> {
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{WRITE_EXTERNAL_STORAGE}, requestCode
+                        );
+                        dialogInterface.dismiss();
+                    }).setNegativeButton(R.string.alertDialog_checkPerm_negButton, (dialog, which) -> {
+                dialog.dismiss();
+            }).show();
+        } else {
+            ActivityCompat.requestPermissions(MainActivity.this,
+                    new String[]{WRITE_EXTERNAL_STORAGE}, requestCode);
+        }
+        return false;
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
-        fileLogger.log("onStart() started");
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onStart() started", this);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        fileLogger.log("onResume() started");
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onResume() started", this);
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        fileLogger.log("onPause() started");
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onPause() started", this);
+        }
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        fileLogger.log("onStop() started");
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onStop() started", this);
+        }
     }
 
     @Override
     protected void onDestroy() {
-        fileLogger.log("onDestroy() started");
+        if (checkStoragePermission(PERMISSIONS_REQUEST_WRITE_EXTERNAL_STORAGE_LOG)) {
+            FileUtil.log("onDestroy() started", this);
+        }
         super.onDestroy();
     }
 
-    @Override
-    public void ascPermission(int requestCode) {
-        requestPermissions(requestCode);
-    }
 }

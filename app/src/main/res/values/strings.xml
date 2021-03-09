@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">ShareFile</string>
-    <string name="share">share</string>
+    <string name="alertDialog_checkPerm_title">Permission Required</string>
+    <string name="alertDialog_checkPerm_desc">Storage permission is required to save data</string>
+    <string name="alertDialog_checkPerm_posButton">ALLOW</string>
+    <string name="alertDialog_checkPerm_negButton">DENIED</string>
 </resources>
